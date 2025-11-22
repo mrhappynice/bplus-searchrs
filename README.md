@@ -1,31 +1,27 @@
-# bplus🤷🏻‍♂️ Search 
+# bplus🤷🏻‍♂️ Searchrs
 v0.3
-### Local LLM powered private web search built in and with optional connection to SearXNG instance.
+### Local LLM powered private web search built in and with optional connection to SearXNG instance.  
+This version is *Rust Powered* for a Node SEA check out node version: https://github.com/mrhappynice/bplus-search
 
 ---
 
-- Free search API providers. 
+- Free local search and API providers. 
 - No MCP needed, custom backend, low context yayyyy
-- SearXNG optional, connect to SearXNG instance or use built-in web search, edit providers to customize
+- SearXNG optional, connect to SearXNG instance or use built-in web search, edit providers to customize. Remove ```USE_NATIVE=1``` from ```.env``` to use SearXNG instead of built-in.
 - Run LM Studio, Ollama, etc(port 1234 and creds in .env) then run this
 - dl
   - ```sh
-    git clone https://github.com/mrhappynice/bplus-search.git && cd bplus-search
-    ```
-- Install: 
-  - ```sh
-    npm install
+    git clone https://github.com/mrhappynice/bplus-searchrs.git && cd bplus-searchrs
     ```
 - Build it:
   - ```sh
-    chmod +x build-sea.sh run-bps.sh
-    ./build-sea.sh
+    cargo build --release
     ```
 - Run:
   - ```sh
     ./run-bps.sh
     ```
-- You just need the ```bplus-search``` executable with the ```node_modules``` folder 
+- ~10MB binary 
 
 - Model run example, download latest llama.cpp compatible version with your system and:
   - ```sh
