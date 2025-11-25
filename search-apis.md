@@ -130,3 +130,43 @@ Example: `https://api.tvmaze.com/search/shows?q=breaking+bad`
 5. **Configure:** In your app, set the URL and replace the search term with `{q}`.
 
 **Pro Tip:** If an API requires a Key (like "Authorization: Bearer 12345"), you put that in the **Headers** field in your settings as `{"Authorization": "Bearer 12345"}`.
+
+
+
+
+### *NOTE Some APIs require keywords. In this example assume you searched for the query below in the UI.
+
+The issue is the **Search Query**.
+
+*   **You searched:** `podcasts related to andrew santino`
+*   **iTunes received:** `term=podcasts related to andrew santino`
+
+**The Difference:**
+*   **DuckDuckGo (Native)** is a "Semantic Search Engine." It understands natural language. It knows "related to" is a connector, not a name.
+*   **Apple/Generic APIs** are usually "Keyword Databases." They are dumb. They look for a podcast explicitly named "related" or "to". Since it couldn't match that exact phrase, it returned whatever loose matches it could find (or garbage), pushing "Whiskey Ginger" off the list.
+
+**The Fix:**
+When using direct database APIs (like Apple, TVMaze, etc.), **search using keywords only**.
+*   Try searching: `Andrew Santino`
+*   Result: You will see "Whiskey Ginger" immediately.
+
+---
+
+### Debugger included for user(generic) APIs. How to use this Output to find NEW APIs
+
+Your debug output gives you the answer directly!
+
+Look at the line `Available Keys in first result:` in your log. This is the "Cheat Sheet" the server gives you for any API you add.
+
+**Example Scenario:**
+Imagine you add a **Book Search API**.
+1.  You run a search.
+2.  The terminal prints:
+    `Available Keys: ["vol_title", "author_name", "pdf_link", "cover_img"]`
+
+Now you know exactly what to type in the Settings UI:
+*   **Title Path:** `vol_title` (because you saw it in the log)
+*   **Content Path:** `author_name`
+*   **URL Path:** `pdf_link`
+
+You don't need to guess. Just add the API, run a search, look at the terminal, and update the settings with the keys you see!
