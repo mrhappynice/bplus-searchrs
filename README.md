@@ -4,12 +4,18 @@ Check out the [search-apis.md](https://github.com/mrhappynice/bplus-searchrs/blo
 ### Local LLM powered private web search built in and with optional connection to SearXNG instance.  
 
 ---
+### Quick Start🏁
+
+- ```sh 
+  curl -fsSL https://raw.githubusercontent.com/mrhappynice/bplus-searchrs/main/install.sh | bash
+  ```
+  enter ```bplus-searchrs``` folder and run: ```./bplus-searchrs``` - Run LM Studio, Ollama, etc(port 1234), put keys for model providers in ```.env```
+---  
 
 - Free local search and model providers(Openrouter, OAI, Google) with native search connectors and user added generic APIs. Debugger added to terminal output check this for help. 
 - No MCP needed, custom backend, low context yayyyy
 - ~10MB binary - UI is gargabe right now, <sub>help..</sub>
 - SearXNG optional, connect to SearXNG instance or use built-in web search, edit providers to customize. Toggle on/off.
-- Run LM Studio, Ollama, etc(port 1234), put keys for model providers in ```.env```
 - dl
   - ```sh
     git clone https://github.com/mrhappynice/bplus-searchrs.git && cd bplus-searchrs
