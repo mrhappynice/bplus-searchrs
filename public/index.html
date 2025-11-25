@@ -52,6 +52,7 @@
                 z-index: 1000;
                 display: flex;
                 flex-direction: column;
+                overflow-y: auto;
             }
 
             #research-panel {
@@ -202,8 +203,6 @@
                 color: var(--primary-color);
                 font-size: 1em;
             }
-            /*.result a { color: var(--link-color); text-decoration: none; font-size: 0.9em; }
-            .result a:hover { text-decoration: underline; }*/
             .result p {
                 margin: 5px 0 0 0;
             }
@@ -293,7 +292,8 @@
                 margin-bottom: 5px;
             }
             .settings-group select,
-            .settings-group textarea {
+            .settings-group textarea,
+            .settings-group input {
                 width: 100%;
                 padding: 8px;
                 background-color: #3d3d3d;
@@ -393,6 +393,12 @@
                 background-color: var(--primary-color);
                 color: white;
             }
+
+            /* --- Provider List Styles --- */
+            #providers-list { list-style: none; padding: 0; }
+            #providers-list li { display: flex; justify-content: space-between; padding: 8px; background: #333; margin-bottom: 5px; border-radius: 4px; align-items: center; }
+            #add-provider-form { display: none; flex-direction: column; gap: 8px; background: #333; padding: 10px; border-radius: 4px; margin-bottom: 20px; }
+            .prov-del-btn { background: #500; border: none; color: white; border-radius: 3px; cursor: pointer; padding: 2px 6px; }
         </style>
     </head>
     <body>
@@ -474,13 +480,13 @@
 
         <aside id="settings-panel">
             <div class="panel-header">
-                <h2>AI Settings</h2>
+                <h2>Settings</h2>
                 <button class="close-panel-btn" data-panel="settings-panel">
                     &times;
                 </button>
             </div>
             <div class="settings-group">
-                <label for="provider-select">Provider</label
+                <label for="provider-select">LLM Provider</label
                 ><select id="provider-select">
                     <option value="lmstudio">Local</option>
                     <option value="openai">OpenAI</option>
@@ -494,6 +500,33 @@
                     <option>Loading models...</option>
                 </select>
             </div>
+            
+            <div class="settings-group">
+                <div class="panel-header">
+                    <h3>Search Sources</h3>
+                    <button id="show-add-prov-btn" class="timeframe-btn" style="font-size: 0.8em;">+ Add</button>
+                </div>
+                
+                <!-- Add Provider Form -->
+                <div id="add-provider-form">
+                    <input id="new-prov-name" placeholder="Name (e.g. Apple Podcasts)" value="Apple Podcasts">
+                    <input id="new-prov-url" placeholder="API URL" value="https://itunes.apple.com/search?term={q}&entity=podcast&limit=5">
+                    <input id="new-prov-headers" placeholder='Headers' value="{}">
+                    <input id="new-prov-res" placeholder="Results Path" value="results">
+                    <input id="new-prov-title" placeholder="Title Path" value="collectionName">
+                    <input id="new-prov-url-path" placeholder="URL Path" value="collectionViewUrl">
+                    <input id="new-prov-content" placeholder="Content Path" value="artistName">
+                    <div style="display:flex; gap:5px; margin-top:5px;">
+                        <button id="save-prov-btn" class="timeframe-btn">Save</button>
+                        <button id="cancel-prov-btn" class="timeframe-btn" style="background:#555">Cancel</button>
+                    </div>
+                </div>
+
+                <ul id="providers-list">
+                    <!-- Populated via JS -->
+                </ul>
+            </div>
+
             <div class="settings-group">
                 <label for="system-prompt-input">System Prompt</label
                 ><textarea id="system-prompt-input">
@@ -555,10 +588,18 @@ You are a helpful assistant that summarizes web search results and formats your 
                 systemPromptInput = document.getElementById(
                     "system-prompt-input",
                 );
+            
+            // --- Providers Elements ---
+            const providersList = document.getElementById("providers-list"),
+                addProviderForm = document.getElementById("add-provider-form"),
+                showAddProvBtn = document.getElementById("show-add-prov-btn"),
+                saveProvBtn = document.getElementById("save-prov-btn"),
+                cancelProvBtn = document.getElementById("cancel-prov-btn");
 
             // --- State ---
             let selectedTimeframe = "",
-                currentConversationId = null;
+                currentConversationId = null,
+                providers = [];
 
             // --- Marked.js & Highlight.js Setup ---
             marked.setOptions({
@@ -590,6 +631,58 @@ You are a helpful assistant that summarizes web search results and formats your 
                 "click",
                 () => (loaderModalOverlay.style.display = "none"),
             );
+
+            // --- Provider Logic ---
+            async function loadProviders() {
+                try {
+                    const res = await fetch('/api/providers');
+                    providers = await res.json();
+                    renderProviders();
+                } catch(e) { console.error(e); }
+            }
+
+            function renderProviders() {
+                providersList.innerHTML = providers.map(p => `
+                    <li>
+                        <label style="display:flex; align-items:center; gap:10px; flex:1; cursor:pointer">
+                            <input type="checkbox" class="prov-check" value="${p.id}" checked>
+                            <span>${p.name} <small style="color:#888">(${p.type})</small></span>
+                        </label>
+                        ${p.type === 'generic' ? `<button onclick="delProvider(${p.id})" class="prov-del-btn">×</button>` : ''}
+                    </li>
+                `).join('');
+            }
+            // Expose delProvider to global scope for onclick
+            window.delProvider = async function(id) {
+                if(confirm('Delete provider?')) {
+                    await fetch(`/api/providers/${id}`, { method: 'DELETE' });
+                    loadProviders();
+                }
+            };
+
+            showAddProvBtn.addEventListener('click', () => addProviderForm.style.display = 'flex');
+            cancelProvBtn.addEventListener('click', () => addProviderForm.style.display = 'none');
+            
+            saveProvBtn.addEventListener('click', async () => {
+                const body = {
+                    name: document.getElementById('new-prov-name').value,
+                    api_url: document.getElementById('new-prov-url').value,
+                    api_headers: document.getElementById('new-prov-headers').value,
+                    result_path: document.getElementById('new-prov-res').value,
+                    title_path: document.getElementById('new-prov-title').value,
+                    url_path: document.getElementById('new-prov-url-path').value,
+                    content_path: document.getElementById('new-prov-content').value
+                };
+                if(!body.name || !body.api_url) return alert("Name and URL required");
+                
+                await fetch('/api/providers', { 
+                    method: 'POST', 
+                    headers:{'Content-Type':'application/json'}, 
+                    body: JSON.stringify(body)
+                });
+                addProviderForm.style.display = 'none';
+                loadProviders();
+            });
 
             // --- Model Loading Logic ---
             async function fetchModels(provider) {
@@ -797,9 +890,13 @@ You are a helpful assistant that summarizes web search results and formats your 
                         }
                     }
 
+                    // Get selected providers
+                    const activeIds = Array.from(document.querySelectorAll('.prov-check:checked')).map(c => parseInt(c.value));
+
                     const settings = {
                         query,
                         timeframe: selectedTimeframe,
+                        providers: activeIds, // Sent selected providers
                         provider: providerSelect.value,
                         model: modelSelect.value,
                         systemPrompt: systemPromptInput.value,
@@ -825,38 +922,52 @@ You are a helpful assistant that summarizes web search results and formats your 
                             decoder = new TextDecoder();
                         let buffer = "";
 
+                        // Corrected SSE Parsing Loop
                         while (true) {
                             const { done, value } = await reader.read();
                             if (done) break;
+                            
                             buffer += decoder.decode(value, { stream: true });
-                            const lines = buffer.split("\n\n");
-                            buffer = lines.pop() || "";
-                            for (const line of lines) {
-                                if (!line.startsWith("event:")) continue;
-                                const eventType = line.match(/event: (.*)/)[1];
-                                const data = JSON.parse(
-                                    line.match(/data: (.*)/)[1],
-                                );
-                                if (eventType === "results") sources = data;
-                                else if (
-                                    eventType === "summary-start" &&
-                                    !assistantMessageDiv
-                                ) {
-                                    ({
-                                        div: assistantMessageDiv,
-                                        content: contentDiv,
-                                    } = appendMessage(
-                                        "assistant",
-                                        "...",
-                                        sources,
-                                    ));
-                                } else if (eventType === "summary-chunk") {
-                                    fullSummaryText += data.text;
-                                    if (contentDiv)
-                                        contentDiv.innerHTML =
-                                            marked.parse(fullSummaryText);
-                                } else if (eventType === "error")
-                                    statusDiv.textContent = `An error occurred: ${data.message}`;
+                            const parts = buffer.split('\n\n');
+                            buffer = parts.pop(); // Keep incomplete part
+
+                            for (const part of parts) {
+                                if(!part.trim()) continue;
+                                const lines = part.split('\n');
+                                let eventType = null;
+                                let eventData = null;
+
+                                for(const line of lines) {
+                                    if(line.startsWith('event:')) eventType = line.substring(6).trim();
+                                    else if(line.startsWith('data:')) eventData = line.substring(5).trim();
+                                }
+                                
+                                if(eventType && eventData) {
+                                    const data = JSON.parse(eventData);
+
+                                    if (eventType === "results") {
+                                        sources = data;
+                                        statusDiv.textContent = `Found ${sources.length} sources...`;
+                                    } else if (
+                                        eventType === "summary-start" &&
+                                        !assistantMessageDiv
+                                    ) {
+                                        ({
+                                            div: assistantMessageDiv,
+                                            content: contentDiv,
+                                        } = appendMessage(
+                                            "assistant",
+                                            "...",
+                                            sources,
+                                        ));
+                                    } else if (eventType === "summary-chunk") {
+                                        fullSummaryText += data.text;
+                                        if (contentDiv)
+                                            contentDiv.innerHTML = marked.parse(fullSummaryText);
+                                    } else if (eventType === "error") {
+                                        statusDiv.textContent = `An error occurred: ${data.message}`;
+                                    }
+                                }
                             }
                         }
                     } catch (error) {
@@ -876,7 +987,7 @@ You are a helpful assistant that summarizes web search results and formats your 
                 contentDiv.innerHTML = marked.parse(content);
                 messageDiv.appendChild(contentDiv);
 
-                if (role === "assistant" && sources.length > 0) {
+                if (role === "assistant" && sources && sources.length > 0) {
                     const sourcesContainer = document.createElement("div");
                     sourcesContainer.className = "sources-container";
                     sourcesContainer.innerHTML = `<span class="sources-toggle">Show ${sources.length} Sources ▼</span>`;
@@ -922,6 +1033,7 @@ You are a helpful assistant that summarizes web search results and formats your 
             document.addEventListener("DOMContentLoaded", () => {
                 fetchModels(providerSelect.value);
                 loadConversations();
+                loadProviders();
             });
         </script>
     </body>
