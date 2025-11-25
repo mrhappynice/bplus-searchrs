@@ -1,6 +1,4 @@
-Since you built a "Generic API" system, you can connect to **any** service that returns JSON. While major search engines (Google/Bing) require keys, there are many public data APIs and open-source search instances you can use for free.
 
-Here are 3 distinct types of APIs to test your system:
 
 ### 1. iTunes Search (Podcasts & Media)
 This is a very reliable, fast API from Apple that requires no key. It's great for testing if your system correctly handles titles, URLs, and descriptions.
