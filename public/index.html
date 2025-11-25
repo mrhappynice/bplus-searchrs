@@ -303,6 +303,7 @@
                 box-sizing: border-box;
             }
 
+            /* --- Conversations List Updates --- */
             #conversations-list {
                 list-style: none;
                 padding: 0;
@@ -316,6 +317,9 @@
                 cursor: pointer;
                 margin-bottom: 5px;
                 border: 1px solid transparent;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
             }
             #conversations-list li:hover {
                 background-color: #3d3d3d;
@@ -324,6 +328,36 @@
                 background-color: var(--primary-color);
                 color: white;
                 border-color: var(--button-hover-bg);
+            }
+
+            .conv-title {
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                flex-grow: 1;
+                margin-right: 10px;
+            }
+
+            .delete-conv-btn {
+                background: none;
+                border: none;
+                color: #888;
+                cursor: pointer;
+                font-size: 1.2em;
+                padding: 0 5px;
+                opacity: 0; /* Hide by default */
+                transition: opacity 0.2s, color 0.2s;
+                flex-shrink: 0;
+            }
+            
+            #conversations-list li:hover .delete-conv-btn,
+            #conversations-list li.active .delete-conv-btn {
+                opacity: 1;
+                color: inherit;
+            }
+            
+            .delete-conv-btn:hover {
+                color: #ff5252 !important;
             }
 
             #new-chat-btn {
@@ -394,11 +428,74 @@
                 color: white;
             }
 
-            /* --- Provider List Styles --- */
+            /* --- Provider List Styles (Updated) --- */
             #providers-list { list-style: none; padding: 0; }
-            #providers-list li { display: flex; justify-content: space-between; padding: 8px; background: #333; margin-bottom: 5px; border-radius: 4px; align-items: center; }
             #add-provider-form { display: none; flex-direction: column; gap: 8px; background: #333; padding: 10px; border-radius: 4px; margin-bottom: 20px; }
             .prov-del-btn { background: #500; border: none; color: white; border-radius: 3px; cursor: pointer; padding: 2px 6px; }
+
+            /* --- Modern Toggle Switch Styles --- */
+            .prov-check {
+                -webkit-appearance: none;
+                appearance: none;
+                width: 40px;
+                height: 22px;
+                background: #4a4a4a;
+                border-radius: 20px;
+                position: relative;
+                outline: none;
+                cursor: pointer;
+                transition: background 0.3s ease;
+                border: 1px solid var(--border-color);
+                margin-right: 10px;
+                flex-shrink: 0;
+            }
+
+            .prov-check::after {
+                content: '';
+                position: absolute;
+                top: 2px;
+                left: 2px;
+                width: 16px;
+                height: 16px;
+                background: #e0e0e0;
+                border-radius: 50%;
+                transition: transform 0.3s cubic-bezier(0.4, 0.0, 0.2, 1);
+                box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+            }
+
+            .prov-check:checked {
+                background: var(--primary-color);
+                border-color: var(--primary-color);
+            }
+
+            .prov-check:checked::after {
+                transform: translateX(18px);
+                background: #fff;
+            }
+
+            /* Adjust list item alignment for the new toggles */
+            #providers-list li {
+                display: flex;
+                justify-content: space-between;
+                padding: 12px 10px;
+                background: #333;
+                margin-bottom: 8px;
+                border-radius: 6px;
+                align-items: center;
+                transition: background 0.2s;
+            }
+
+            #providers-list li:hover {
+                background: #3c3c3c;
+            }
+
+            #providers-list label {
+                display: flex;
+                align-items: center;
+                width: 15%;
+                cursor: pointer;
+            }
+
         </style>
     </head>
     <body>
@@ -502,9 +599,13 @@
             </div>
             
             <div class="settings-group">
-                <div class="panel-header">
+                <div class="panel-header" style="flex-wrap: wrap; gap: 10px;">
                     <h3>Search Sources</h3>
-                    <button id="show-add-prov-btn" class="timeframe-btn" style="font-size: 0.8em;">+ Add</button>
+                    <div style="display: flex; gap: 5px;">
+                        <button id="sel-all-prov-btn" class="timeframe-btn" style="font-size: 0.8em; padding: 4px 8px;">All</button>
+                        <button id="sel-none-prov-btn" class="timeframe-btn" style="font-size: 0.8em; padding: 4px 8px;">None</button>
+                        <button id="show-add-prov-btn" class="timeframe-btn" style="font-size: 0.8em; padding: 4px 8px;">+ Add</button>
+                    </div>
                 </div>
                 
                 <!-- Add Provider Form -->
@@ -594,7 +695,9 @@ You are a helpful assistant that summarizes web search results and formats your 
                 addProviderForm = document.getElementById("add-provider-form"),
                 showAddProvBtn = document.getElementById("show-add-prov-btn"),
                 saveProvBtn = document.getElementById("save-prov-btn"),
-                cancelProvBtn = document.getElementById("cancel-prov-btn");
+                cancelProvBtn = document.getElementById("cancel-prov-btn"),
+                selAllProvBtn = document.getElementById("sel-all-prov-btn"),
+                selNoneProvBtn = document.getElementById("sel-none-prov-btn");
 
             // --- State ---
             let selectedTimeframe = "",
@@ -641,17 +744,48 @@ You are a helpful assistant that summarizes web search results and formats your 
                 } catch(e) { console.error(e); }
             }
 
-            function renderProviders() {
+             function renderProviders() {
                 providersList.innerHTML = providers.map(p => `
                     <li>
-                        <label style="display:flex; align-items:center; gap:10px; flex:1; cursor:pointer">
-                            <input type="checkbox" class="prov-check" value="${p.id}" checked>
-                            <span>${p.name} <small style="color:#888">(${p.type})</small></span>
+                        <label>
+                            <input type="checkbox" class="prov-check" value="${p.id}" ${p.is_enabled ? 'checked' : ''} data-id="${p.id}">
+                            <div style="display:flex; flex-direction:column;">
+                                <span style="font-weight:500; font-size:1em;">${p.name}</span>
+                                <span style="font-size:0.75em; color:#999;">${p.type === 'native' ? 'Built-in' : 'Custom API'}</span>
+                            </div>
                         </label>
-                        ${p.type === 'generic' ? `<button onclick="delProvider(${p.id})" class="prov-del-btn">×</button>` : ''}
+                        ${p.type === 'generic' ? `<button onclick="delProvider(${p.id})" class="prov-del-btn" title="Delete">×</button>` : ''}
                     </li>
                 `).join('');
+
+                // Attach listeners to update internal state when clicked manually
+                document.querySelectorAll('.prov-check').forEach(chk => {
+                    chk.addEventListener('change', (e) => {
+                        const id = parseInt(e.target.dataset.id);
+                        const prov = providers.find(p => p.id === id);
+                        if (prov) prov.is_enabled = e.target.checked;
+                    });
+                });
             }
+
+            // Select All Listener
+            selAllProvBtn.addEventListener('click', () => {
+                providers.forEach(p => p.is_enabled = true);
+                renderProviders();
+            });
+
+            // Select None Listener (Except Local DB)
+            selNoneProvBtn.addEventListener('click', () => {
+                providers.forEach(p => {
+                    if (p.api_url !== "native_local_db") {
+                        p.is_enabled = false;
+                    } else {
+                        p.is_enabled = true;
+                    }
+                });
+                renderProviders();
+            });
+
             // Expose delProvider to global scope for onclick
             window.delProvider = async function(id) {
                 if(confirm('Delete provider?')) {
@@ -716,7 +850,10 @@ You are a helpful assistant that summarizes web search results and formats your 
                     conversationsList.innerHTML = convos
                         .map(
                             (c) =>
-                                `<li data-id="${c.id}" class="${c.id === currentConversationId ? "active" : ""}">${c.title}</li>`,
+                                `<li data-id="${c.id}" class="${c.id === currentConversationId ? "active" : ""}">
+                                    <span class="conv-title">${c.title}</span>
+                                    <button class="delete-conv-btn" onclick="deleteConversation(${c.id}, event)" title="Delete Chat">×</button>
+                                </li>`,
                         )
                         .join("");
                 } catch (error) {
@@ -724,6 +861,27 @@ You are a helpful assistant that summarizes web search results and formats your 
                         "<li>Error loading chats</li>";
                 }
             }
+
+            // Expose deleteConversation to global scope
+            window.deleteConversation = async function(id, event) {
+                event.stopPropagation(); // Prevent loading the chat when deleting
+                if (!confirm("Are you sure you want to delete this chat?")) return;
+
+                try {
+                    const res = await fetch(`/api/conversations/${id}`, { method: 'DELETE' });
+                    if (res.ok) {
+                        if (currentConversationId === id) {
+                            startNewChat();
+                        }
+                        loadConversations();
+                    } else {
+                        alert("Failed to delete conversation");
+                    }
+                } catch (e) {
+                    console.error(e);
+                    alert("Error deleting conversation");
+                }
+            };
 
             async function loadConversation(id) {
                 try {
@@ -768,8 +926,11 @@ You are a helpful assistant that summarizes web search results and formats your 
             newChatBtn.addEventListener("click", startNewChat);
 
             conversationsList.addEventListener("click", (e) => {
-                if (e.target.tagName === "LI") {
-                    const id = parseInt(e.target.dataset.id);
+                // Modified click listener to handle the new structure
+                const li = e.target.closest("li");
+                // Ensure we clicked an LI and NOT the delete button
+                if (li && !e.target.classList.contains("delete-conv-btn")) {
+                    const id = parseInt(li.dataset.id);
                     if (id !== currentConversationId) loadConversation(id);
                 }
             });
