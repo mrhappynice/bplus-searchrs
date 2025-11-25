@@ -1,5 +1,5 @@
 # bplus🤷🏻‍♂️ Searchrs
-v0.4.1.1 grrr APIs!!  
+v0.4.1.2 local db search + APIs!!  
 Check out the [search-apis.md](https://github.com/mrhappynice/bplus-searchrs/blob/main/search-apis.md) file to see how to add your own. (When clicking the +Add button)Apple Podcasts API is auto-populated to demo how, remove to add custom paths. 
 ### Local LLM powered private web search built in and with optional connection to SearXNG instance.  
 
