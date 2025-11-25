@@ -31,23 +31,15 @@ async fn main() {
     let app = Router::new()
         .route("/api/models", get(llm::list_models))
         .route("/api/suggest", get(search::suggest))
-        
-        // Conversation Routes
         .route("/api/conversations", get(db::routes::list_conversations).post(db::routes::create_conversation))
         .route("/api/conversations/:id", get(db::routes::get_conversation).delete(db::routes::delete_conversation))
         .route("/api/conversations/:id/notes", put(db::routes::save_note))
         .route("/api/conversations/:id/query", post(handlers::handle_query))
-        
-        // Provider Routes
         .route("/api/providers", get(db::routes::list_providers).post(db::routes::add_provider))
         .route("/api/providers/:id", delete(db::routes::delete_provider))
-        
-        // DB Backup
         .route("/api/research/save", post(db::routes::save_db))
         .route("/api/research/load", post(db::routes::load_db))
         .route("/api/research/files", get(db::routes::list_db_files))
-        
-        // Static
         .route("/", get(index_handler))
         .route("/index.html", get(index_handler))
         .fallback(static_handler)
@@ -80,8 +72,8 @@ mod handlers {
     #[derive(Deserialize)]
     pub struct QueryRequest {
         query: String,
-        timeframe: Option<String>, // Added back
-        providers: Option<Vec<i64>>, // Added
+        timeframe: Option<String>,
+        providers: Option<Vec<i64>>,
         provider: String, 
         model: String,    
         #[serde(rename = "systemPrompt")]
@@ -97,11 +89,10 @@ mod handlers {
         let _ = state.db.add_message(conversation_id, "user", &req.query, None);
 
         let stream = async_stream::stream! {
-            // 1. Get Selected Providers from DB
             let providers_config = state.db.get_providers(req.providers).unwrap_or_default();
             
-            // 2. Perform Modular Search (Pass timeframe)
-            let client = reqwest::Client::builder().user_agent("bplus/1.0").timeout(std::time::Duration::from_secs(15)).build().unwrap();
+            // REVERTED USER AGENT to "bplus-native/1.0" for better native results
+            let client = reqwest::Client::builder().user_agent("bplus-native/1.0").timeout(std::time::Duration::from_secs(15)).build().unwrap();
             
             let mut search_results = crate::search::perform_search(
                 client, 
@@ -110,29 +101,27 @@ mod handlers {
                 req.timeframe.clone()
             ).await;
 
-            // Trim to max 15 results
             if search_results.len() > 15 { search_results.truncate(15); }
 
-            // SEND RESULTS EVENT (Crucial for UI to show links)
             yield Ok(Event::default().event("results").json_data(&search_results).unwrap());
 
             if search_results.is_empty() {
                 yield Ok(Event::default().event("summary-chunk").json_data(serde_json::json!({"text": "No search results found to summarize."})).unwrap());
-                // Save assistant message even if empty
                 let _ = state.db.add_message(conversation_id, "assistant", "No search results found to summarize.", Some("[]"));
                 return;
             }
 
-            // 3. LLM
             let history = state.db.get_history(conversation_id).unwrap_or_default();
             
             let snippets: String = search_results.iter()
                 .map(|r| format!("[{}] {}\nURL: {}\nSnippet: {}", r.engine, r.title, r.url, r.content))
                 .collect::<Vec<_>>().join("\n\n---\n\n");
             
+            // ADDED CURRENT DATE
+            let current_date = chrono::Local::now().format("%Y-%m-%d").to_string();
             let user_prompt = format!(
-                "Based on the following search results, write a clear, concise summary answering my latest prompt: \"{}\".\n\nSearch Results:\n{}", 
-                req.query, snippets
+                "Current Date: {}\nQuery: \"{}\"\n\nBased on the following search results, write a clear, concise summary answering the query. If results mention this date, they are current.\n\nSearch Results:\n{}", 
+                current_date, req.query, snippets
             );
 
             yield Ok(Event::default().event("summary-start").data("{}"));
@@ -152,7 +141,6 @@ mod handlers {
                 }
             }
 
-            // Save assistant message
             let sources_json = serde_json::to_string(&search_results).unwrap_or_default();
             let msg_id = state.db.add_message(conversation_id, "assistant", &full_text, Some(&sources_json)).unwrap_or(0);
             yield Ok(Event::default().event("summary-done").json_data(serde_json::json!({"messageId": msg_id})).unwrap());

@@ -56,10 +56,10 @@ impl DbManager {
             CREATE TABLE IF NOT EXISTS search_providers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
-                type TEXT NOT NULL, -- 'native' or 'generic'
-                api_url TEXT, -- For generic: URL with {q}. For native: identifier (e.g., 'native_ddg')
-                api_headers TEXT, -- JSON string
-                result_path TEXT, -- JSON path to array, e.g., 'web.results'
+                type TEXT NOT NULL,
+                api_url TEXT,
+                api_headers TEXT,
+                result_path TEXT,
                 title_path TEXT, 
                 url_path TEXT,
                 content_path TEXT,
@@ -76,23 +76,29 @@ impl DbManager {
             "
         )?;
 
-        // Seed default providers if empty
-        let count: i64 = conn.query_row("SELECT count(*) FROM search_providers", [], |r| r.get(0)).unwrap_or(0);
-        if count == 0 {
-            let defaults = vec![
-                ("DuckDuckGo", "native", "native_ddg"),
-                ("Mojeek", "native", "native_mojeek"),
-                ("Wikipedia", "native", "native_wiki"),
-                ("Reddit", "native", "native_reddit"),
-                ("StackExchange", "native", "native_stack"),
-            ];
-            // If SEARXNG env is set, add it
-            if std::env::var("SEARXNG_URL").is_ok() {
-               conn.execute("INSERT INTO search_providers (name, type, api_url) VALUES (?, ?, ?)", 
-                   params!["SearXNG", "native", "native_searxng"]).unwrap();
-            }
+        // Ensure defaults exist (DDG, Qwant, etc)
+        // We use INSERT OR IGNORE logic via checking name presence
+        let defaults = vec![
+            ("DuckDuckGo", "native", "native_ddg"),
+            ("Qwant", "native", "native_qwant"), // Ensure Qwant is here
+            ("Mojeek", "native", "native_mojeek"),
+            ("Wikipedia", "native", "native_wiki"),
+            ("Reddit", "native", "native_reddit"),
+            ("StackExchange", "native", "native_stack"),
+        ];
 
-            for (name, ptype, url) in defaults {
+        if std::env::var("SEARXNG_URL").is_ok() {
+             // Basic check if it exists
+             let count: i64 = conn.query_row("SELECT count(*) FROM search_providers WHERE api_url = 'native_searxng'", [], |r| r.get(0)).unwrap_or(0);
+             if count == 0 {
+                 conn.execute("INSERT INTO search_providers (name, type, api_url) VALUES (?, ?, ?)", 
+                   params!["SearXNG", "native", "native_searxng"]).unwrap();
+             }
+        }
+
+        for (name, ptype, url) in defaults {
+            let count: i64 = conn.query_row("SELECT count(*) FROM search_providers WHERE api_url = ?", params![url], |r| r.get(0)).unwrap_or(0);
+            if count == 0 {
                 conn.execute(
                     "INSERT INTO search_providers (name, type, api_url) VALUES (?, ?, ?)",
                     params![name, ptype, url],
@@ -126,11 +132,9 @@ impl DbManager {
         Ok(history)
     }
 
-    // --- Provider Helpers ---
     pub fn get_providers(&self, ids: Option<Vec<i64>>) -> Result<Vec<crate::search::ProviderConfig>> {
         let conn = self.conn.lock().unwrap();
         let query = "SELECT id, name, type, api_url, api_headers, result_path, title_path, url_path, content_path FROM search_providers WHERE is_enabled = 1".to_string();
-        
         let mut stmt = conn.prepare(&query)?;
         
         let iter = stmt.query_map([], |row| {
@@ -151,9 +155,7 @@ impl DbManager {
         for p in iter { 
             let p = p?;
             if let Some(req_ids) = &ids {
-                if req_ids.contains(&p.id) {
-                    providers.push(p);
-                }
+                if req_ids.contains(&p.id) { providers.push(p); }
             } else {
                 providers.push(p);
             }
@@ -196,7 +198,6 @@ pub mod routes {
         Json(rows.map(|r| r.unwrap()).collect())
     }
     
-    // FIX: Made struct pub
     #[derive(Deserialize)] 
     pub struct CreateConv { title: Option<String> }
     
@@ -262,10 +263,8 @@ pub mod routes {
         StatusCode::NO_CONTENT
     }
 
-    // --- DB File Routes ---
     #[derive(Deserialize)] 
     pub struct FileReq { filename: String }
-    
     pub async fn save_db(State(state): State<Arc<crate::AppState>>, Json(req): Json<FileReq>) -> Json<serde_json::Value> {
         let mut f = req.filename; if !f.ends_with(".db") { f.push_str(".db"); }
         state.db.save_to_file(&f).unwrap();

@@ -20,7 +20,7 @@ pub struct ProviderConfig {
     pub id: i64,
     pub name: String,
     #[serde(rename = "type")]
-    pub type_: String, // "native", "generic"
+    pub type_: String,
     pub api_url: Option<String>,
     pub api_headers: Option<String>,
     pub result_path: Option<String>,
@@ -29,10 +29,7 @@ pub struct ProviderConfig {
     pub content_path: Option<String>,
 }
 
-// --- Trait System ---
-
 pub trait SearchProvider: Send + Sync {
-    // Added timeframe back to signature
     fn search(&self, client: Client, query: String, timeframe: Option<String>) -> Pin<Box<dyn Future<Output = Vec<SearchResult>> + Send>>;
 }
 
@@ -42,18 +39,28 @@ struct GenericApiProvider {
 }
 
 impl GenericApiProvider {
+    // Smart extraction: Handles Strings, Numbers, and Booleans
     fn extract(&self, val: &serde_json::Value, path: Option<&String>) -> String {
         let path = match path { Some(p) if !p.is_empty() => p, _ => return "".to_string() };
         let parts: Vec<&str> = path.split('.').collect();
         let mut curr = val;
+        
         for part in parts {
             if let Some(idx) = part.parse::<usize>().ok() {
-                if let Some(arr) = curr.as_array() { curr = &arr[idx]; } else { return "".to_string(); }
+                if let Some(arr) = curr.as_array() { 
+                    if idx < arr.len() { curr = &arr[idx]; } else { return "".to_string(); }
+                } else { return "".to_string(); }
             } else {
                 curr = &curr[part];
             }
         }
-        curr.as_str().unwrap_or("").to_string()
+
+        match curr {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Number(n) => n.to_string(),
+            serde_json::Value::Bool(b) => b.to_string(),
+            _ => "".to_string()
+        }
     }
 }
 
@@ -64,8 +71,14 @@ impl SearchProvider for GenericApiProvider {
             let url_tmpl = config.api_url.as_deref().unwrap_or("");
             if url_tmpl.is_empty() { return vec![]; }
             let url = url_tmpl.replace("{q}", &urlencoding::encode(&query));
+            
+            println!("\n--- [DEBUG] Provider: {} ---", config.name);
+            println!("Target URL: {}", url);
 
             let mut req = client.get(&url);
+            // Use a real browser UA to prevent blocking
+            req = req.header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+
             if let Some(h_str) = &config.api_headers {
                 if let Ok(headers) = serde_json::from_str::<std::collections::HashMap<String, String>>(h_str) {
                     for (k, v) in headers { req = req.header(&k, &v); }
@@ -73,30 +86,57 @@ impl SearchProvider for GenericApiProvider {
             }
 
             let mut results = Vec::new();
-            if let Ok(resp) = req.send().await {
-                if let Ok(json) = resp.json::<serde_json::Value>().await {
-                    let mut root = &json;
-                    if let Some(rpath) = &config.result_path {
-                        for part in rpath.split('.') {
-                            if !part.is_empty() { root = &root[part]; }
-                        }
-                    }
+            match req.send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    println!("Status Code: {}", status);
                     
-                    if let Some(arr) = root.as_array() {
-                        for item in arr {
-                            let title = GenericApiProvider{config: config.clone()}.extract(item, config.title_path.as_ref());
-                            let url = GenericApiProvider{config: config.clone()}.extract(item, config.url_path.as_ref());
-                            if !url.is_empty() {
-                                results.push(SearchResult {
-                                    title: if title.is_empty() { "No Title".into() } else { title },
-                                    url,
-                                    content: GenericApiProvider{config: config.clone()}.extract(item, config.content_path.as_ref()),
-                                    engine: config.name.clone()
-                                });
+                    if let Ok(json) = resp.json::<serde_json::Value>().await {
+                        let mut root = &json;
+                        
+                        // Navigate to results array
+                        if let Some(rpath) = &config.result_path {
+                            for part in rpath.split('.') {
+                                if !part.is_empty() { root = &root[part]; }
                             }
                         }
+                        
+                        if let Some(arr) = root.as_array() {
+                            println!("Items found: {}", arr.len());
+                            
+                            // --- DEBUG: Print keys of the first item to help user find paths ---
+                            if let Some(first) = arr.first() {
+                                if let Some(obj) = first.as_object() {
+                                    println!("Available Keys in first result: {:?}", obj.keys().collect::<Vec<_>>());
+                                }
+                            }
+                            // ------------------------------------------------------------------
+
+                            for item in arr {
+                                let title = GenericApiProvider{config: config.clone()}.extract(item, config.title_path.as_ref());
+                                let url = GenericApiProvider{config: config.clone()}.extract(item, config.url_path.as_ref());
+                                
+                                if !url.is_empty() {
+                                    results.push(SearchResult {
+                                        title: if title.is_empty() { "No Title".into() } else { title },
+                                        url,
+                                        content: GenericApiProvider{config: config.clone()}.extract(item, config.content_path.as_ref()),
+                                        engine: config.name.clone()
+                                    });
+                                }
+                            }
+                        } else {
+                            println!("Error: Result path {:?} did not lead to an Array.", config.result_path);
+                            // Print root keys to see what we actually got
+                            if let Some(obj) = root.as_object() {
+                                println!("Root keys received: {:?}", obj.keys().collect::<Vec<_>>());
+                            }
+                        }
+                    } else {
+                        println!("Error: Failed to parse JSON response.");
                     }
-                }
+                },
+                Err(e) => println!("Error: Request failed: {}", e),
             }
             results
         })
@@ -114,19 +154,18 @@ impl SearchProvider for NativeProvider {
         let id = self.id.clone();
         Box::pin(async move {
             match id.as_str() {
-                "native_ddg" => ddg_web(client, query, timeframe).await, // DDG supports timeframe
+                "native_ddg" => ddg_web(client, query, timeframe).await,
+                "native_qwant" => qwant_web(client, query).await,
                 "native_mojeek" => mojeek_web(client, query).await,
                 "native_wiki" => wikipedia_web(client, query).await,
                 "native_reddit" => reddit_web(client, query).await,
                 "native_stack" => stackexchange_web(client, query).await,
-                "native_searxng" => searxng_search(client, query, timeframe).await, // SearXNG supports timeframe
+                "native_searxng" => searxng_search(client, query, timeframe).await,
                 _ => vec![]
             }
         })
     }
 }
-
-// --- Main Entry Point ---
 
 pub async fn perform_search(
     client: Client, 
@@ -135,8 +174,17 @@ pub async fn perform_search(
     timeframe: Option<String>
 ) -> Vec<SearchResult> {
     let mut futures = Vec::new();
+    
+    // Fallback defaults
+    let effective_providers = if providers.is_empty() {
+        vec![
+            ProviderConfig { id:0, name:"DuckDuckGo".into(), type_:"native".into(), api_url:Some("native_ddg".into()), api_headers:None, result_path:None, title_path:None, url_path:None, content_path:None },
+        ]
+    } else {
+        providers
+    };
 
-    for p in providers {
+    for p in effective_providers {
         let provider: Box<dyn SearchProvider> = if p.type_ == "generic" {
             Box::new(GenericApiProvider { config: p })
         } else {
@@ -145,13 +193,10 @@ pub async fn perform_search(
                 _name: p.name.clone() 
             })
         };
-        
         futures.push(provider.search(client.clone(), query.clone(), timeframe.clone()));
     }
 
     let results_list = join_all(futures).await;
-    
-    // Merge and Dedup
     let mut all = Vec::new();
     for res in results_list { all.extend(res); }
 
@@ -174,8 +219,7 @@ pub async fn perform_search(
     unique
 }
 
-// --- Native Implementations ---
-
+// --- Native Impls ---
 async fn searxng_search(client: Client, query: String, timeframe: Option<String>) -> Vec<SearchResult> {
     let base = std::env::var("SEARXNG_URL").unwrap_or_default();
     if base.is_empty() { return vec![]; }
@@ -183,7 +227,6 @@ async fn searxng_search(client: Client, query: String, timeframe: Option<String>
     if let Some(tf) = timeframe {
         if ["day", "week", "month"].contains(&tf.as_str()) { url.push_str(&format!("&time_range={}", tf)); }
     }
-    
     if let Ok(resp) = client.get(&url).send().await {
         if let Ok(json) = resp.json::<serde_json::Value>().await {
              if let Some(arr) = json["results"].as_array() {
@@ -205,14 +248,12 @@ async fn ddg_web(client: Client, q: String, timeframe: Option<String>) -> Vec<Se
         let df = match tf.as_str() { "day" => "d", "week" => "w", "month" => "m", _ => "" };
         if !df.is_empty() { url.push_str(&format!("&df={}", df)); }
     }
-
     if let Ok(resp) = client.get(&url).send().await {
         let html = resp.text().await.unwrap_or_default();
         let doc = Html::parse_document(&html);
         let res_sel = Selector::parse(".result").unwrap();
         let a_sel = Selector::parse("a.result__a").unwrap();
         let s_sel = Selector::parse(".result__snippet").unwrap();
-        
         let mut out = Vec::new();
         for el in doc.select(&res_sel) {
             if let Some(a) = el.select(&a_sel).next() {
@@ -224,9 +265,32 @@ async fn ddg_web(client: Client, q: String, timeframe: Option<String>) -> Vec<Se
                 });
             }
         }
-        return out;
+        out
+    } else { vec![] }
+}
+
+async fn qwant_web(client: Client, q: String) -> Vec<SearchResult> {
+    let url = format!("https://www.qwant.com/?q={}&t=web", urlencoding::encode(&q));
+    match client.get(&url).send().await {
+        Ok(resp) => {
+            let html = resp.text().await.unwrap_or_default();
+            let fragment = Html::parse_document(&html);
+            let result_sel = Selector::parse("[data-testid=\"result-card\"]").unwrap();
+            let mut out = Vec::new();
+            for el in fragment.select(&result_sel) {
+                 let link_sel = Selector::parse("a").unwrap();
+                 if let Some(a) = el.select(&link_sel).next() {
+                     let title = a.text().collect::<String>().trim().to_string();
+                     let url = a.value().attr("href").unwrap_or("").to_string();
+                     if !url.is_empty() {
+                         out.push(SearchResult { title, url, content: "Qwant Result".into(), engine: "Qwant".into() });
+                     }
+                 }
+            }
+            out
+        },
+        Err(_) => vec![]
     }
-    vec![]
 }
 
 async fn mojeek_web(client: Client, q: String) -> Vec<SearchResult> {
@@ -246,9 +310,8 @@ async fn mojeek_web(client: Client, q: String) -> Vec<SearchResult> {
                 });
             }
         }
-        return out;
-    }
-    vec![]
+        out
+    } else { vec![] }
 }
 
 async fn wikipedia_web(client: Client, q: String) -> Vec<SearchResult> {
@@ -302,7 +365,6 @@ async fn stackexchange_web(client: Client, q: String) -> Vec<SearchResult> {
     vec![]
 }
 
-// --- AutoComplete ---
 pub async fn suggest(Query(p): Query<std::collections::HashMap<String,String>>) -> Json<Vec<String>> {
     let q = p.get("q").cloned().unwrap_or_default();
     if q.is_empty() { return Json(vec![]); }
