@@ -6,6 +6,8 @@ use reqwest::Client;
 use std::pin::Pin;
 use std::future::Future;
 use std::collections::HashSet;
+use std::path::PathBuf;
+use rusqlite::{Connection, OpenFlags, params};
 
 #[derive(Serialize, Clone, Debug)]
 pub struct SearchResult {
@@ -27,6 +29,7 @@ pub struct ProviderConfig {
     pub title_path: Option<String>,
     pub url_path: Option<String>,
     pub content_path: Option<String>,
+    pub is_enabled: bool, 
 }
 
 pub trait SearchProvider: Send + Sync {
@@ -39,7 +42,6 @@ struct GenericApiProvider {
 }
 
 impl GenericApiProvider {
-    // Smart extraction: Handles Strings, Numbers, and Booleans
     fn extract(&self, val: &serde_json::Value, path: Option<&String>) -> String {
         let path = match path { Some(p) if !p.is_empty() => p, _ => return "".to_string() };
         let parts: Vec<&str> = path.split('.').collect();
@@ -64,6 +66,12 @@ impl GenericApiProvider {
     }
 }
 
+impl GenericApiProvider {
+    pub fn new(config: ProviderConfig) -> Self {
+        Self { config }
+    }
+}
+
 impl SearchProvider for GenericApiProvider {
     fn search(&self, client: Client, query: String, _timeframe: Option<String>) -> Pin<Box<dyn Future<Output = Vec<SearchResult>> + Send>> {
         let config = self.config.clone();
@@ -72,11 +80,7 @@ impl SearchProvider for GenericApiProvider {
             if url_tmpl.is_empty() { return vec![]; }
             let url = url_tmpl.replace("{q}", &urlencoding::encode(&query));
             
-            println!("\n--- [DEBUG] Provider: {} ---", config.name);
-            println!("Target URL: {}", url);
-
             let mut req = client.get(&url);
-            // Use a real browser UA to prevent blocking
             req = req.header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
 
             if let Some(h_str) = &config.api_headers {
@@ -88,13 +92,8 @@ impl SearchProvider for GenericApiProvider {
             let mut results = Vec::new();
             match req.send().await {
                 Ok(resp) => {
-                    let status = resp.status();
-                    println!("Status Code: {}", status);
-                    
                     if let Ok(json) = resp.json::<serde_json::Value>().await {
                         let mut root = &json;
-                        
-                        // Navigate to results array
                         if let Some(rpath) = &config.result_path {
                             for part in rpath.split('.') {
                                 if !part.is_empty() { root = &root[part]; }
@@ -102,38 +101,20 @@ impl SearchProvider for GenericApiProvider {
                         }
                         
                         if let Some(arr) = root.as_array() {
-                            println!("Items found: {}", arr.len());
-                            
-                            // --- DEBUG: Print keys of the first item to help user find paths ---
-                            if let Some(first) = arr.first() {
-                                if let Some(obj) = first.as_object() {
-                                    println!("Available Keys in first result: {:?}", obj.keys().collect::<Vec<_>>());
-                                }
-                            }
-                            // ------------------------------------------------------------------
-
                             for item in arr {
-                                let title = GenericApiProvider{config: config.clone()}.extract(item, config.title_path.as_ref());
-                                let url = GenericApiProvider{config: config.clone()}.extract(item, config.url_path.as_ref());
+                                let title = GenericApiProvider::new(config.clone()).extract(item, config.title_path.as_ref());
+                                let url = GenericApiProvider::new(config.clone()).extract(item, config.url_path.as_ref());
                                 
                                 if !url.is_empty() {
                                     results.push(SearchResult {
                                         title: if title.is_empty() { "No Title".into() } else { title },
                                         url,
-                                        content: GenericApiProvider{config: config.clone()}.extract(item, config.content_path.as_ref()),
+                                        content: GenericApiProvider::new(config.clone()).extract(item, config.content_path.as_ref()),
                                         engine: config.name.clone()
                                     });
                                 }
                             }
-                        } else {
-                            println!("Error: Result path {:?} did not lead to an Array.", config.result_path);
-                            // Print root keys to see what we actually got
-                            if let Some(obj) = root.as_object() {
-                                println!("Root keys received: {:?}", obj.keys().collect::<Vec<_>>());
-                            }
                         }
-                    } else {
-                        println!("Error: Failed to parse JSON response.");
                     }
                 },
                 Err(e) => println!("Error: Request failed: {}", e),
@@ -154,6 +135,7 @@ impl SearchProvider for NativeProvider {
         let id = self.id.clone();
         Box::pin(async move {
             match id.as_str() {
+                "native_local_db" => local_db_search(query).await,
                 "native_ddg" => ddg_web(client, query, timeframe).await,
                 "native_qwant" => qwant_web(client, query).await,
                 "native_mojeek" => mojeek_web(client, query).await,
@@ -175,10 +157,17 @@ pub async fn perform_search(
 ) -> Vec<SearchResult> {
     let mut futures = Vec::new();
     
-    // Fallback defaults
+    // Default to Local Database if no providers selected
     let effective_providers = if providers.is_empty() {
         vec![
-            ProviderConfig { id:0, name:"DuckDuckGo".into(), type_:"native".into(), api_url:Some("native_ddg".into()), api_headers:None, result_path:None, title_path:None, url_path:None, content_path:None },
+            ProviderConfig { 
+                id: 0, 
+                name: "Local Database".into(), 
+                type_: "native".into(), 
+                api_url: Some("native_local_db".into()), 
+                api_headers: None, result_path: None, title_path: None, url_path: None, content_path: None,
+                is_enabled: true 
+            },
         ]
     } else {
         providers
@@ -209,6 +198,7 @@ pub async fn perform_search(
         }
     }
     
+    // Sort relevance locally
     let q_low = query.to_lowercase();
     unique.sort_by(|a, b| {
         let ascore = if a.title.to_lowercase().contains(&q_low) { 1 } else { 0 };
@@ -220,6 +210,150 @@ pub async fn perform_search(
 }
 
 // --- Native Impls ---
+
+async fn local_db_search(query: String) -> Vec<SearchResult> {
+    let files: Vec<PathBuf> = match std::fs::read_dir(".") {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map_or(false, |ext| ext == "db"))
+            .collect(),
+        Err(_) => return vec![]
+    };
+
+    if files.is_empty() { return vec![]; }
+
+    let task = tokio::task::spawn_blocking(move || {
+        let mut results = Vec::new();
+        // High limit to ensure we find hits across different conversations
+        let limit_raw_hits = 100; 
+
+        for path in files {
+            let filename = path.file_name().unwrap().to_string_lossy().to_string();
+            
+            if let Ok(conn) = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY) {
+                
+                // 1. Search Notes (Summaries)
+                // Notes are high-value dense information, search them first
+                let notes_sql = "
+                    SELECT n.content, c.title, n.updated_at
+                    FROM notes n 
+                    JOIN conversations c ON n.conversation_id = c.id
+                    WHERE n.content LIKE '%' || ? || '%' 
+                       OR c.title LIKE '%' || ? || '%'
+                    LIMIT 3
+                ";
+                
+                if let Ok(mut notes_stmt) = conn.prepare(notes_sql) {
+                    let notes_rows = notes_stmt.query_map(params![query, query], |row| {
+                        Ok(SearchResult {
+                            title: format!("[Local: {}] NOTE: {}", filename, row.get::<_,String>(1)?),
+                            url: format!("local://{}/notes/{}", filename, row.get::<_,String>(1)?),
+                            content: format!("(Summary updated: {}) {}", row.get::<_,String>(2)?, row.get::<_,String>(0)?),
+                            engine: "LocalDB".into()
+                        })
+                    });
+                    if let Ok(iter) = notes_rows { for r in iter.flatten() { results.push(r); } }
+                }
+
+                // 2. Search Messages (Deep Search)
+                // Strategy: Fetch many hits sorted by DATE (newest first), then Deduplicate by Conversation
+                let has_fts: bool = conn.query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='messages_fts'", 
+                    [], |r| r.get(0)
+                ).unwrap_or(false);
+
+                // Use simple struct to hold raw hits before fetching full context
+                struct RawHit { id: i64, conv_id: i64, date: String }
+
+                let sql = if has_fts {
+                    // Join FTS with Messages to get Created_At for sorting
+                    "SELECT m.id, m.conversation_id, m.created_at 
+                     FROM messages_fts f 
+                     JOIN messages m ON f.rowid = m.id 
+                     WHERE messages_fts MATCH ? 
+                     ORDER BY m.created_at DESC 
+                     LIMIT ?"
+                } else {
+                    "SELECT id, conversation_id, created_at 
+                     FROM messages 
+                     WHERE content LIKE '%' || ? || '%' 
+                     ORDER BY created_at DESC 
+                     LIMIT ?"
+                };
+
+                // Remove quotes for broader FTS match
+                let param = if has_fts { query.replace("\"", "") } else { query.clone() };
+
+                let mut raw_hits = Vec::new();
+                if let Ok(mut stmt) = conn.prepare(sql) {
+                    let rows = stmt.query_map(params![param, limit_raw_hits], |row| {
+                        Ok(RawHit { 
+                            id: row.get(0)?, 
+                            conv_id: row.get(1)?, 
+                            date: row.get(2)? 
+                        })
+                    });
+                    if let Ok(iter) = rows {
+                        for r in iter.flatten() { raw_hits.push(r); }
+                    }
+                }
+
+                // Filter Logic: Ensure diversity by taking only 1 hit per conversation
+                let mut seen_convs = HashSet::new();
+                let mut diverse_hits = Vec::new();
+                
+                for hit in raw_hits {
+                    if !seen_convs.contains(&hit.conv_id) {
+                        seen_convs.insert(hit.conv_id);
+                        diverse_hits.push(hit);
+                    }
+                }
+
+                // 3. Fetch Context for Selected Hits
+                if !diverse_hits.is_empty() {
+                     if let Ok(mut context_stmt) = conn.prepare(
+                        "SELECT role, content, created_at FROM messages 
+                         WHERE conversation_id = ? AND id >= ? - 3 AND id <= ? + 3
+                         ORDER BY id ASC"
+                    ) {
+                        if let Ok(mut title_stmt) = conn.prepare("SELECT title FROM conversations WHERE id = ?") {
+                            
+                            for hit in diverse_hits {
+                                let chat_title: String = title_stmt.query_row(params![hit.conv_id], |r| r.get(0)).unwrap_or("Chat".into());
+                                
+                                let rows = context_stmt.query_map(params![hit.conv_id, hit.id, hit.id], |row| {
+                                    let role: String = row.get(0)?;
+                                    let content: String = row.get(1)?;
+                                    let date: String = row.get(2)?;
+                                    Ok(format!("({}) {}: {}", date, role.to_uppercase(), content))
+                                });
+
+                                if let Ok(msgs) = rows {
+                                    let full_transcript = msgs.filter_map(|r| r.ok()).collect::<Vec<_>>().join("\n\n");
+                                    
+                                    results.push(SearchResult {
+                                        title: format!("[Local: {}] Chat: {}", filename, chat_title),
+                                        url: format!("local://{}/chat/{}/{}", filename, chat_title, hit.id), 
+                                        content: full_transcript,
+                                        engine: "LocalDB".into()
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        results
+    });
+
+    match task.await {
+        Ok(res) => res,
+        Err(_) => vec![]
+    }
+}
+
 async fn searxng_search(client: Client, query: String, timeframe: Option<String>) -> Vec<SearchResult> {
     let base = std::env::var("SEARXNG_URL").unwrap_or_default();
     if base.is_empty() { return vec![]; }

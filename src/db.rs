@@ -76,32 +76,33 @@ impl DbManager {
             "
         )?;
 
-        // Ensure defaults exist (DDG, Qwant, etc)
-        // We use INSERT OR IGNORE logic via checking name presence
+        // Ensure defaults exist. 
+        // Tuple: (Name, Type, API_URL, Enabled)
+        // 1 = Checked by default, 0 = Unchecked
         let defaults = vec![
-            ("DuckDuckGo", "native", "native_ddg"),
-            ("Qwant", "native", "native_qwant"), // Ensure Qwant is here
-            ("Mojeek", "native", "native_mojeek"),
-            ("Wikipedia", "native", "native_wiki"),
-            ("Reddit", "native", "native_reddit"),
-            ("StackExchange", "native", "native_stack"),
+            ("Local Database", "native", "native_local_db", 1), 
+            ("DuckDuckGo", "native", "native_ddg", 0),
+            ("Qwant", "native", "native_qwant", 0),
+            ("Mojeek", "native", "native_mojeek", 0),
+            ("Wikipedia", "native", "native_wiki", 0),
+            ("Reddit", "native", "native_reddit", 0),
+            ("StackExchange", "native", "native_stack", 0),
         ];
 
         if std::env::var("SEARXNG_URL").is_ok() {
-             // Basic check if it exists
              let count: i64 = conn.query_row("SELECT count(*) FROM search_providers WHERE api_url = 'native_searxng'", [], |r| r.get(0)).unwrap_or(0);
              if count == 0 {
-                 conn.execute("INSERT INTO search_providers (name, type, api_url) VALUES (?, ?, ?)", 
+                 conn.execute("INSERT INTO search_providers (name, type, api_url, is_enabled) VALUES (?, ?, ?, 0)", 
                    params!["SearXNG", "native", "native_searxng"]).unwrap();
              }
         }
 
-        for (name, ptype, url) in defaults {
+        for (name, ptype, url, enabled) in defaults {
             let count: i64 = conn.query_row("SELECT count(*) FROM search_providers WHERE api_url = ?", params![url], |r| r.get(0)).unwrap_or(0);
             if count == 0 {
                 conn.execute(
-                    "INSERT INTO search_providers (name, type, api_url) VALUES (?, ?, ?)",
-                    params![name, ptype, url],
+                    "INSERT INTO search_providers (name, type, api_url, is_enabled) VALUES (?, ?, ?, ?)",
+                    params![name, ptype, url, enabled],
                 ).unwrap();
             }
         }
@@ -134,7 +135,8 @@ impl DbManager {
 
     pub fn get_providers(&self, ids: Option<Vec<i64>>) -> Result<Vec<crate::search::ProviderConfig>> {
         let conn = self.conn.lock().unwrap();
-        let query = "SELECT id, name, type, api_url, api_headers, result_path, title_path, url_path, content_path FROM search_providers WHERE is_enabled = 1".to_string();
+        // Added is_enabled to the query
+        let query = "SELECT id, name, type, api_url, api_headers, result_path, title_path, url_path, content_path, is_enabled FROM search_providers".to_string();
         let mut stmt = conn.prepare(&query)?;
         
         let iter = stmt.query_map([], |row| {
@@ -148,6 +150,7 @@ impl DbManager {
                 title_path: row.get(6)?,
                 url_path: row.get(7)?,
                 content_path: row.get(8)?,
+                is_enabled: row.get(9)?, // Map the bool
             })
         })?;
 
@@ -250,8 +253,8 @@ pub mod routes {
     pub async fn add_provider(State(state): State<Arc<crate::AppState>>, Json(req): Json<AddProviderReq>) -> Json<serde_json::Value> {
         let conn = state.db.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO search_providers (name, type, api_url, api_headers, result_path, title_path, url_path, content_path) 
-             VALUES (?, 'generic', ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO search_providers (name, type, api_url, api_headers, result_path, title_path, url_path, content_path, is_enabled) 
+             VALUES (?, 'generic', ?, ?, ?, ?, ?, ?, 1)",
             params![req.name, req.api_url, req.api_headers, req.result_path, req.title_path, req.url_path, req.content_path]
         ).unwrap();
         Json(serde_json::json!({ "id": conn.last_insert_rowid() }))

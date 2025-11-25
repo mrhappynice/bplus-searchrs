@@ -89,11 +89,16 @@ mod handlers {
         let _ = state.db.add_message(conversation_id, "user", &req.query, None);
 
         let stream = async_stream::stream! {
+            // Get providers (or empty list if user unchecked everything)
             let providers_config = state.db.get_providers(req.providers).unwrap_or_default();
             
-            // REVERTED USER AGENT to "bplus-native/1.0" for better native results
-            let client = reqwest::Client::builder().user_agent("bplus-native/1.0").timeout(std::time::Duration::from_secs(15)).build().unwrap();
+            let client = reqwest::Client::builder()
+                .user_agent("bplus-native/1.0")
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+                .unwrap();
             
+            // Perform Search (returns empty vec if no providers selected)
             let mut search_results = crate::search::perform_search(
                 client, 
                 providers_config, 
@@ -103,26 +108,30 @@ mod handlers {
 
             if search_results.len() > 15 { search_results.truncate(15); }
 
+            // Send results to UI (even if empty, so UI knows search finished)
             yield Ok(Event::default().event("results").json_data(&search_results).unwrap());
 
-            if search_results.is_empty() {
-                yield Ok(Event::default().event("summary-chunk").json_data(serde_json::json!({"text": "No search results found to summarize."})).unwrap());
-                let _ = state.db.add_message(conversation_id, "assistant", "No search results found to summarize.", Some("[]"));
-                return;
-            }
-
             let history = state.db.get_history(conversation_id).unwrap_or_default();
-            
-            let snippets: String = search_results.iter()
-                .map(|r| format!("[{}] {}\nURL: {}\nSnippet: {}", r.engine, r.title, r.url, r.content))
-                .collect::<Vec<_>>().join("\n\n---\n\n");
-            
-            // ADDED CURRENT DATE
             let current_date = chrono::Local::now().format("%Y-%m-%d").to_string();
-            let user_prompt = format!(
-                "Current Date: {}\nQuery: \"{}\"\n\nBased on the following search results, write a clear, concise summary answering the query. If results mention this date, they are current.\n\nSearch Results:\n{}", 
-                current_date, req.query, snippets
-            );
+
+            // --- Prompt Logic ---
+            let user_prompt = if search_results.is_empty() {
+                // Pure Chat Mode (No Search Results)
+                format!(
+                    "Current Date: {}\nQuery: \"{}\"\n\nNo external search results were used for this response. Please answer the query using your internal knowledge.", 
+                    current_date, req.query
+                )
+            } else {
+                // RAG Mode (With Search Results)
+                let snippets: String = search_results.iter()
+                    .map(|r| format!("[{}] {}\nURL: {}\nSnippet: {}", r.engine, r.title, r.url, r.content))
+                    .collect::<Vec<_>>().join("\n\n---\n\n");
+                
+                format!(
+                    "Current Date: {}\nQuery: \"{}\"\n\nBased on the following search results, write a clear, concise summary answering the query. If results mention this date, they are current.\n\nSearch Results:\n{}", 
+                    current_date, req.query, snippets
+                )
+            };
 
             yield Ok(Event::default().event("summary-start").data("{}"));
 
