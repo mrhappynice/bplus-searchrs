@@ -5,10 +5,11 @@ Check out the [search-apis.md](https://github.com/mrhappynice/bplus-searchrs/blo
 
 ---
 
-- Free local search and API providers. 
+- Free local search and model providers(Openrouter, OAI, Google) with native search connectors and user added generic APIs. Debugger added to terminal output check this for help. 
 - No MCP needed, custom backend, low context yayyyy
-- SearXNG optional, connect to SearXNG instance or use built-in web search, edit providers to customize. Remove ```USE_NATIVE=1``` from ```.env``` to use SearXNG instead of built-in.
-- Run LM Studio, Ollama, etc(port 1234 and creds in .env) then run this
+- ~10MB binary 
+- SearXNG optional, connect to SearXNG instance or use built-in web search, edit providers to customize. Toggle on/off.
+- Run LM Studio, Ollama, etc(port 1234), put keys for model providers in ```.env```
 - dl
   - ```sh
     git clone https://github.com/mrhappynice/bplus-searchrs.git && cd bplus-searchrs
@@ -21,7 +22,6 @@ Check out the [search-apis.md](https://github.com/mrhappynice/bplus-searchrs/blo
   - ```sh
     ./run-bps.sh
     ```
-- ~10MB binary 
 
 - Model run example, download latest llama.cpp compatible version with your system and:  
     *Note, the Local provider drop down is listening on port 1234 so just run any OAI compat endpoint on that port.
