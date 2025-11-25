@@ -7,7 +7,7 @@ Check out the [search-apis.md](https://github.com/mrhappynice/bplus-searchrs/blo
 
 - Free local search and model providers(Openrouter, OAI, Google) with native search connectors and user added generic APIs. Debugger added to terminal output check this for help. 
 - No MCP needed, custom backend, low context yayyyy
-- ~10MB binary - UI is gargabe right now, <sub>help, me..</sub>
+- ~10MB binary - UI is gargabe right now, <sub>help..</sub>
 - SearXNG optional, connect to SearXNG instance or use built-in web search, edit providers to customize. Toggle on/off.
 - Run LM Studio, Ollama, etc(port 1234), put keys for model providers in ```.env```
 - dl
