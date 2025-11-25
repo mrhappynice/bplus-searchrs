@@ -1,5 +1,5 @@
 # bplus🤷🏻‍♂️ Searchrs
-v0.3
+v0.4.1 grrr APIs!!
 ### Local LLM powered private web search built in and with optional connection to SearXNG instance.  
 This version is *Rust Powered* for a Node SEA check out node version: https://github.com/mrhappynice/bplus-search
 
