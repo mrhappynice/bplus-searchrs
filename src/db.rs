@@ -4,15 +4,12 @@ use std::path::PathBuf;
 use anyhow::Result;
 
 pub struct DbManager {
-    // We use a Mutex<Connection> because we might swap the underlying file 
-    // (Load DB) or backup the connection.
-    conn: Arc<Mutex<Connection>>,
-    current_file: Arc<Mutex<Option<PathBuf>>>, // None = :memory:
+    pub conn: Arc<Mutex<Connection>>,
+    current_file: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl DbManager {
     pub fn new() -> Self {
-        // Default to memory to match server.js logic
         let conn = Connection::open_in_memory().expect("Failed to open memory DB");
         Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -56,6 +53,19 @@ impl DbManager {
                 FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS search_providers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                type TEXT NOT NULL, -- 'native' or 'generic'
+                api_url TEXT, -- For generic: URL with {q}. For native: identifier (e.g., 'native_ddg')
+                api_headers TEXT, -- JSON string
+                result_path TEXT, -- JSON path to array, e.g., 'web.results'
+                title_path TEXT, 
+                url_path TEXT,
+                content_path TEXT,
+                is_enabled BOOLEAN DEFAULT 1
+            );
+
             CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
                 content, content='messages', content_rowid='id'
             );
@@ -63,18 +73,35 @@ impl DbManager {
             CREATE TRIGGER IF NOT EXISTS messages_after_insert AFTER INSERT ON messages BEGIN
                 INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
             END;
-            CREATE TRIGGER IF NOT EXISTS messages_after_delete AFTER DELETE ON messages BEGIN
-                INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
-            END;
-            CREATE TRIGGER IF NOT EXISTS messages_after_update AFTER UPDATE ON messages BEGIN
-                UPDATE messages_fts SET content = new.content WHERE rowid = old.id;
-            END;
             "
         )?;
+
+        // Seed default providers if empty
+        let count: i64 = conn.query_row("SELECT count(*) FROM search_providers", [], |r| r.get(0)).unwrap_or(0);
+        if count == 0 {
+            let defaults = vec![
+                ("DuckDuckGo", "native", "native_ddg"),
+                ("Mojeek", "native", "native_mojeek"),
+                ("Wikipedia", "native", "native_wiki"),
+                ("Reddit", "native", "native_reddit"),
+                ("StackExchange", "native", "native_stack"),
+            ];
+            // If SEARXNG env is set, add it
+            if std::env::var("SEARXNG_URL").is_ok() {
+               conn.execute("INSERT INTO search_providers (name, type, api_url) VALUES (?, ?, ?)", 
+                   params!["SearXNG", "native", "native_searxng"]).unwrap();
+            }
+
+            for (name, ptype, url) in defaults {
+                conn.execute(
+                    "INSERT INTO search_providers (name, type, api_url) VALUES (?, ?, ?)",
+                    params![name, ptype, url],
+                ).unwrap();
+            }
+        }
+
         Ok(())
     }
-
-    // --- Core Operations ---
 
     pub fn add_message(&self, conv_id: i64, role: &str, content: &str, sources: Option<&str>) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
@@ -87,47 +114,62 @@ impl DbManager {
 
     pub fn get_history(&self, conv_id: i64) -> Result<Vec<crate::llm::Message>> {
         let conn = self.conn.lock().unwrap();
-        // Exclude the very last message (which is usually the user query currently being processed, 
-        // but in the Node logic, it filters specifically. We will just fetch previous messages).
-        // Node logic: SELECT role, content FROM messages ... AND id NOT IN (SELECT id ... ORDER BY created_at DESC LIMIT 1)
-        let mut stmt = conn.prepare(
-            "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY created_at ASC"
-        )?;
-        
+        let mut stmt = conn.prepare("SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY created_at ASC")?;
         let rows = stmt.query_map(params![conv_id], |row| {
-            Ok(crate::llm::Message {
-                role: row.get(0)?,
-                content: row.get(1)?,
+            Ok(crate::llm::Message { role: row.get(0)?, content: row.get(1)? })
+        })?;
+        let mut history = Vec::new();
+        for r in rows { history.push(r?); }
+        if let Some(last) = history.last() {
+            if last.role == "user" { history.pop(); }
+        }
+        Ok(history)
+    }
+
+    // --- Provider Helpers ---
+    pub fn get_providers(&self, ids: Option<Vec<i64>>) -> Result<Vec<crate::search::ProviderConfig>> {
+        let conn = self.conn.lock().unwrap();
+        let query = "SELECT id, name, type, api_url, api_headers, result_path, title_path, url_path, content_path FROM search_providers WHERE is_enabled = 1".to_string();
+        
+        let mut stmt = conn.prepare(&query)?;
+        
+        let iter = stmt.query_map([], |row| {
+            Ok(crate::search::ProviderConfig {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                type_: row.get(2)?,
+                api_url: row.get(3)?,
+                api_headers: row.get(4)?,
+                result_path: row.get(5)?,
+                title_path: row.get(6)?,
+                url_path: row.get(7)?,
+                content_path: row.get(8)?,
             })
         })?;
 
-        // Convert to vec and exclude last user message if needed, 
-        // but simplified here: LLMs usually handle the duplicate user prompt fine if it's in history + prompt.
-        // We will return all history except the current turn to avoid duplication if the caller appends the prompt manually.
-        let mut history = Vec::new();
-        for r in rows { history.push(r?); }
-        
-        // Remove the last one if it matches the current query context (optional optimization)
-        if let Some(last) = history.last() {
-            if last.role == "user" {
-                history.pop(); 
+        let mut providers = Vec::new();
+        for p in iter { 
+            let p = p?;
+            if let Some(req_ids) = &ids {
+                if req_ids.contains(&p.id) {
+                    providers.push(p);
+                }
+            } else {
+                providers.push(p);
             }
         }
-        Ok(history)
+        Ok(providers)
     }
 
     pub fn load_file(&self, filename: &str) -> Result<()> {
         let path = Self::get_storage_dir().join(filename);
         let new_conn = Connection::open(&path)?;
-        
-        // Swap connections
         {
             let mut conn_guard = self.conn.lock().unwrap();
             *conn_guard = new_conn;
             let mut path_guard = self.current_file.lock().unwrap();
             *path_guard = Some(path);
         }
-        // Re-init schema/pragmas
         self.init_schema()?;
         Ok(())
     }
@@ -140,150 +182,104 @@ impl DbManager {
     }
 }
 
-// --- Routes for DB (Controllers) ---
 pub mod routes {
     use super::*;
     use axum::{Json, extract::{Path, State}, http::StatusCode};
     use serde::{Deserialize, Serialize};
 
     #[derive(Serialize)]
-    pub struct Conversation {
-        id: i64,
-        title: String,
-        created_at: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        messages: Option<Vec<MessageRow>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        note_content: Option<String>,
-    }
-
-    #[derive(Serialize)]
-    pub struct MessageRow {
-        id: i64,
-        role: String,
-        content: String,
-        sources: Option<String>,
-        created_at: String,
-    }
-
+    pub struct Conversation { id: i64, title: String, created_at: String }
     pub async fn list_conversations(State(state): State<Arc<crate::AppState>>) -> Json<Vec<Conversation>> {
         let conn = state.db.conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT id, title, created_at FROM conversations ORDER BY created_at DESC").unwrap();
-        let rows = stmt.query_map([], |row| {
-            Ok(Conversation {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                created_at: row.get(2)?,
-                messages: None,
-                note_content: None,
-            })
-        }).unwrap();
-        let mut res = Vec::new();
-        for r in rows { res.push(r.unwrap()); }
-        Json(res)
+        let rows = stmt.query_map([], |r| Ok(Conversation{id:r.get(0)?, title:r.get(1)?, created_at:r.get(2)?})).unwrap();
+        Json(rows.map(|r| r.unwrap()).collect())
     }
-
-    #[derive(Deserialize)]
-    pub struct CreateConvReq { title: Option<String> }
     
-    pub async fn create_conversation(State(state): State<Arc<crate::AppState>>, Json(req): Json<CreateConvReq>) -> Json<serde_json::Value> {
+    // FIX: Made struct pub
+    #[derive(Deserialize)] 
+    pub struct CreateConv { title: Option<String> }
+    
+    pub async fn create_conversation(State(state): State<Arc<crate::AppState>>, Json(req): Json<CreateConv>) -> Json<serde_json::Value> {
         let conn = state.db.conn.lock().unwrap();
-        let title = req.title.unwrap_or_else(|| "New Conversation".to_string());
-        conn.execute("INSERT INTO conversations (title) VALUES (?)", params![title]).unwrap();
-        let id = conn.last_insert_rowid();
-        Json(serde_json::json!({ "id": id, "title": title }))
+        conn.execute("INSERT INTO conversations (title) VALUES (?)", params![req.title.unwrap_or("New Chat".into())]).unwrap();
+        Json(serde_json::json!({ "id": conn.last_insert_rowid() }))
     }
 
-    pub async fn get_conversation(Path(id): Path<i64>, State(state): State<Arc<crate::AppState>>) -> Result<Json<Conversation>, StatusCode> {
+    pub async fn get_conversation(Path(id): Path<i64>, State(state): State<Arc<crate::AppState>>) -> Json<serde_json::Value> {
         let conn = state.db.conn.lock().unwrap();
-        
-        let mut conv_stmt = conn.prepare(
-            "SELECT c.id, c.title, c.created_at, n.content as note_content 
-             FROM conversations c
-             LEFT JOIN notes n ON c.id = n.conversation_id
-             WHERE c.id = ?"
-        ).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-        let mut conv = conv_stmt.query_row(params![id], |row| {
-            Ok(Conversation {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                created_at: row.get(2)?,
-                messages: Some(Vec::new()),
-                note_content: row.get(3).unwrap_or(None),
-            })
-        }).map_err(|_| StatusCode::NOT_FOUND)?;
-
-        let mut msg_stmt = conn.prepare("SELECT id, role, content, sources, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at ASC").unwrap();
-        let msgs = msg_stmt.query_map(params![id], |row| {
-            Ok(MessageRow {
-                id: row.get(0)?,
-                role: row.get(1)?,
-                content: row.get(2)?,
-                sources: row.get(3)?,
-                created_at: row.get(4)?,
-            })
-        }).unwrap();
-
-        let mut messages = Vec::new();
-        for m in msgs { messages.push(m.unwrap()); }
-        conv.messages = Some(messages);
-
-        Ok(Json(conv))
+        let mut stmt = conn.prepare("SELECT role, content, sources FROM messages WHERE conversation_id = ? ORDER BY created_at ASC").unwrap();
+        let msgs: Vec<serde_json::Value> = stmt.query_map(params![id], |r| {
+            Ok(serde_json::json!({ "role": r.get::<_,String>(0)?, "content": r.get::<_,String>(1)?, "sources": r.get::<_,Option<String>>(2)? }))
+        }).unwrap().map(|r| r.unwrap()).collect();
+        let note: Option<String> = conn.query_row("SELECT content FROM notes WHERE conversation_id = ?", params![id], |r| r.get(0)).ok();
+        Json(serde_json::json!({ "messages": msgs, "note_content": note }))
     }
 
     pub async fn delete_conversation(Path(id): Path<i64>, State(state): State<Arc<crate::AppState>>) -> StatusCode {
-        let conn = state.db.conn.lock().unwrap();
-        match conn.execute("DELETE FROM conversations WHERE id = ?", params![id]) {
-            Ok(changes) if changes > 0 => StatusCode::NO_CONTENT,
-            _ => StatusCode::NOT_FOUND
-        }
+        state.db.conn.lock().unwrap().execute("DELETE FROM conversations WHERE id = ?", params![id]).unwrap();
+        StatusCode::NO_CONTENT
     }
 
-    #[derive(Deserialize)]
+    #[derive(Deserialize)] 
     pub struct NoteReq { content: String }
     pub async fn save_note(Path(id): Path<i64>, State(state): State<Arc<crate::AppState>>, Json(req): Json<NoteReq>) -> Json<serde_json::Value> {
-        let conn = state.db.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO notes (conversation_id, content, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
-             ON CONFLICT(conversation_id) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at",
-            params![id, req.content]
-        ).unwrap();
-        Json(serde_json::json!({ "message": "Notes saved" }))
+        state.db.conn.lock().unwrap().execute("INSERT INTO notes (conversation_id, content) VALUES (?, ?) ON CONFLICT(conversation_id) DO UPDATE SET content=excluded.content", params![id, req.content]).unwrap();
+        Json(serde_json::json!({"status": "ok"}))
+    }
+
+    // --- Provider Routes ---
+
+    pub async fn list_providers(State(state): State<Arc<crate::AppState>>) -> Json<Vec<crate::search::ProviderConfig>> {
+        let providers = state.db.get_providers(None).unwrap_or_default();
+        Json(providers)
     }
 
     #[derive(Deserialize)]
+    pub struct AddProviderReq {
+        name: String,
+        api_url: String,
+        api_headers: String,
+        result_path: String,
+        title_path: String,
+        url_path: String,
+        content_path: String
+    }
+
+    pub async fn add_provider(State(state): State<Arc<crate::AppState>>, Json(req): Json<AddProviderReq>) -> Json<serde_json::Value> {
+        let conn = state.db.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO search_providers (name, type, api_url, api_headers, result_path, title_path, url_path, content_path) 
+             VALUES (?, 'generic', ?, ?, ?, ?, ?, ?)",
+            params![req.name, req.api_url, req.api_headers, req.result_path, req.title_path, req.url_path, req.content_path]
+        ).unwrap();
+        Json(serde_json::json!({ "id": conn.last_insert_rowid() }))
+    }
+
+    pub async fn delete_provider(Path(id): Path<i64>, State(state): State<Arc<crate::AppState>>) -> StatusCode {
+        let conn = state.db.conn.lock().unwrap();
+        conn.execute("DELETE FROM search_providers WHERE id = ?", params![id]).unwrap();
+        StatusCode::NO_CONTENT
+    }
+
+    // --- DB File Routes ---
+    #[derive(Deserialize)] 
     pub struct FileReq { filename: String }
     
     pub async fn save_db(State(state): State<Arc<crate::AppState>>, Json(req): Json<FileReq>) -> Json<serde_json::Value> {
-        let mut fname = req.filename;
-        if !fname.ends_with(".db") { fname.push_str(".db"); }
-        match state.db.save_to_file(&fname) {
-            Ok(_) => Json(serde_json::json!({ "message": format!("Saved to {}", fname) })),
-            Err(e) => Json(serde_json::json!({ "error": e.to_string() }))
-        }
+        let mut f = req.filename; if !f.ends_with(".db") { f.push_str(".db"); }
+        state.db.save_to_file(&f).unwrap();
+        Json(serde_json::json!({"message": "saved"}))
     }
-
     pub async fn load_db(State(state): State<Arc<crate::AppState>>, Json(req): Json<FileReq>) -> Json<serde_json::Value> {
-        match state.db.load_file(&req.filename) {
-            Ok(_) => Json(serde_json::json!({ "message": format!("Loaded {}", req.filename) })),
-            Err(e) => Json(serde_json::json!({ "error": e.to_string() }))
-        }
+        state.db.load_file(&req.filename).unwrap();
+        Json(serde_json::json!({"message": "loaded"}))
     }
-
     pub async fn list_db_files() -> Json<Vec<String>> {
         let dir = DbManager::get_storage_dir();
-        let mut files = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().map(|s| s == "db").unwrap_or(false) {
-                    if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
-                        files.push(name.to_string());
-                    }
-                }
-            }
-        }
+        let files = std::fs::read_dir(dir).unwrap().flatten()
+            .filter(|e| e.path().extension().map_or(false, |x| x=="db"))
+            .map(|e| e.file_name().to_string_lossy().to_string()).collect();
         Json(files)
     }
 }
