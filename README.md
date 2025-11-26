@@ -1,7 +1,7 @@
-# bplus🤷🏻‍♂️ Searchrs
+# bplus🤷🏻‍♂️ Searchrs 
 v0.4.1.2 local db search + APIs!!  
 Check out the [search-apis.md](https://github.com/mrhappynice/bplus-searchrs/blob/main/search-apis.md) file to see how to add your own. (When clicking the +Add button)Apple Podcasts API is auto-populated to demo how, remove to add custom paths. 
-#### Super small, super fast, Rust + HTML/JS UI. Local database of convos for research memory, provider and model selection(local and paid) , built-in native connectors and generic user added apis through UI. Optional connection to SearXNG. 
+#### Super small, super fast, Rust + HTML/JS UI. Local database of convos for research memory, provider and model selection(local and paid) , built-in native connectors and generic user added apis through UI. Optional connection to SearXNG. <sub>buggy buggy :)</sub>
 ---
 ### Quick Start🏁
 
