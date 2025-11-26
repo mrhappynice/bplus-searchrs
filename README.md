@@ -8,7 +8,7 @@ Check out the [search-apis.md](https://github.com/mrhappynice/bplus-searchrs/blo
 - ```sh 
   curl -fsSL https://raw.githubusercontent.com/mrhappynice/bplus-searchrs/main/install.sh | bash
   ```
-  enter ```bplus-searchrs``` folder and run: ```./bplus-searchrs``` - Run LM Studio, Ollama, etc(port 1234), put keys for model providers in ```.env```
+  enter ```bplus-searchrs``` folder and run: ```./bplus-searchrs``` - Run LM Studio, Ollama, etc(port 1234), put any keys for model providers in ```.env```
 ---  
 
 - Free local search and model providers(Openrouter, OAI, Google) with native search connectors and user added generic APIs. Debugger added to terminal output check this for help. 
