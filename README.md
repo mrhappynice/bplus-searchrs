@@ -10,7 +10,23 @@ Check out the [search-apis.md](https://github.com/mrhappynice/bplus-searchrs/blo
   ```
   enter ```bplus-searchrs``` folder and run: ```./bplus-searchrs``` - Run LM Studio, Ollama, etc(port 1234), put any keys for model providers in ```.env```
 ---  
+- Windows terminal single paste install:
+  ```sh
+  $urls = @(
+    "https://github.com/mrhappynice/bplus-searchrs/raw/refs/heads/main/.env",
+    "https://github.com/mrhappynice/bplus-searchrs/releases/download/v0.4.1.2/bplus-searchrs.exe"
+    "https://github.com/mrhappynice/bplus-searchrs/raw/refs/heads/main/blank.db"
+  )
 
+  foreach ($u in $urls) {
+    $name = Split-Path $u -Leaf
+    Invoke-WebRequest $u -OutFile $name
+  }
+
+  ```
+  Simply run: ```.\bplus-searchrs.exe``` in terminal. Run LM Studio, Ollama, etc(port 1234), put any keys for model providers in ```.env``` Then connect to http://localhost:3001
+  
+---  
 - Free local search and model providers(Openrouter, OAI, Google) with native search connectors and user added generic APIs. Debugger added to terminal output check this for help. 
 - No MCP needed, custom backend, low context yayyyy
 - ~10MB binary - UI is gargabe right now, <sub>help..</sub>
