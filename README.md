@@ -39,6 +39,7 @@ Check out the [search-apis.md](https://github.com/mrhappynice/bplus-searchrs/blo
   - ```sh
     cargo build --release
     ```
+    - If you want MSVC statically linked build on Windows(to avoid missing dll errors) Before you build - create the folder: ```.cargo``` in the bplus-searchrs main directory and copy the config.toml from the web folder into it. Test with dumpbin /dependents xxxx.exe
 - Run:
   - ```sh
     ./run-bps.sh
