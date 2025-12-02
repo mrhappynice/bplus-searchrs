@@ -14,7 +14,7 @@ Check out the [search-apis.md](https://github.com/mrhappynice/bplus-searchrs/blo
   ```sh
   $urls = @(
     "https://github.com/mrhappynice/bplus-searchrs/raw/refs/heads/main/.env",
-    "https://github.com/mrhappynice/bplus-searchrs/releases/download/v0.4.1.2/bplus-searchrs.exe"
+    "https://github.com/mrhappynice/bplus-searchrs/releases/download/v0.4.1.2/bplus-searchrs-static.exe"
     "https://github.com/mrhappynice/bplus-searchrs/raw/refs/heads/main/blank.db"
   )
 
